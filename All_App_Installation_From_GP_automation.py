@@ -22,7 +22,7 @@ TEST_APPS = [
     ("fi.reportronic.app", "Reportronic", ("XPATH", "//android.widget.Button[@text='Login with QR code']")),
     ("com.feelment", "Feelment", ("ACCESSIBILITY_ID", "Kirjaudu sisään")),
     ("com.coubonga.app", "Coubonga", ("ACCESSIBILITY_ID", "PUHELINNUMERO")),
-    ("com.iloq.smartlock.s50", "iLOQ", ("XPATH", "//android.widget.TextView[@resource-id='android:id/message']")),
+    ("com.iloq.smartlock.s50", "iLOQ", ("ID", "com.iloq.smartlock.s50:id/agreeEulaButton")),
 ]
 
 PLAY_STORE_PACKAGE = "com.android.vending"
@@ -81,6 +81,29 @@ def save_installation_results():
         json.dump(installation_results, f, indent=2)
     print(f"Saved installation results for {len(installation_results)} apps")
 
+def update_installation_result_with_ui_status(package_name, ui_success, error_message=None):
+    """Update the installation result with UI verification status"""
+    try:
+        for result in installation_results:
+            if result["package_name"] == package_name:
+                result["ui_verification"] = "Success" if ui_success else "Failed"
+                if error_message:
+                    result["ui_error"] = error_message
+                
+                # Determine overall status
+                install_ok = "Success" in result["installation_status"]
+                if install_ok and ui_success:
+                    result["overall_status"] = "Available"
+                elif install_ok and not ui_success:
+                    result["overall_status"] = "Issues - UI verification failed"
+                else:
+                    result["overall_status"] = "Issues - Installation failed"
+                break
+        
+        save_installation_results()
+    except Exception as e:
+        print(f"Failed to update UI status for {package_name}: {e}")
+
 @pytest.fixture(scope="function")
 def play_store_driver():
     """Setup Play Store driver for app installation"""
@@ -126,6 +149,8 @@ def check_element(driver, by_type, value, timeout=10):
             by = AppiumBy.CLASS_NAME
         elif by_type == "XPATH":
             by = AppiumBy.XPATH
+        elif by_type == "ID":
+            by = AppiumBy.ID
         else:
             by = AppiumBy.ACCESSIBILITY_ID
             
@@ -188,13 +213,15 @@ def test_install_app_from_play_store(play_store_driver, package_name, app_name, 
             # Get installed version
             version = get_app_version(package_name)
             
-            # Save results
+            # Save results with initial status
             result = {
                 "package_name": package_name,
                 "app_name": app_name,
                 "installation_status": "Success",
                 "installed_version": version,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "ui_verification": "Pending",
+                "overall_status": "Installation completed"
             }
             installation_results.append(result)
             save_installation_results()
@@ -212,7 +239,9 @@ def test_install_app_from_play_store(play_store_driver, package_name, app_name, 
                     "app_name": app_name,
                     "installation_status": "Success (no install button)",
                     "installed_version": version,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "ui_verification": "Pending",
+                    "overall_status": "Installation completed"
                 }
                 installation_results.append(result)
                 save_installation_results()
@@ -224,7 +253,9 @@ def test_install_app_from_play_store(play_store_driver, package_name, app_name, 
                     "app_name": app_name,
                     "installation_status": "Failed",
                     "installed_version": "N/A",
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "ui_verification": "Skipped",
+                    "overall_status": "Issues - Installation failed"
                 }
                 installation_results.append(result)
                 save_installation_results()
@@ -239,38 +270,53 @@ def test_verify_app_ui(app_driver, package_name, app_name, ui_check):
     with allure.step(f"Verifying {app_name} UI loads correctly"):
         # Skip if app is not installed
         if not is_package_installed(package_name):
+            update_installation_result_with_ui_status(package_name, False, "App not installed")
             pytest.skip(f"{package_name} is not installed, skipping UI verification")
         
         driver = app_driver
+        ui_success = False
+        error_message = None
         
-        # Launch the app
-        driver.execute_script('mobile: shell', {
-            'command': 'monkey',
-            'args': ['-p', package_name, '-c', 'android.intent.category.LAUNCHER', '1'],
-            'includeStderr': True,
-            'timeout': 10000
-        })
-        time.sleep(5)
-        
-        # Check for expected UI element
-        by_type, element_value = ui_check
-        
-        if by_type and element_value and element_value != "android.widget.TextView":  # Skip generic placeholder
-            ui_found = check_element(driver, by_type, element_value, timeout=10)
+        try:
+            # Launch the app
+            driver.execute_script('mobile: shell', {
+                'command': 'monkey',
+                'args': ['-p', package_name, '-c', 'android.intent.category.LAUNCHER', '1'],
+                'includeStderr': True,
+                'timeout': 10000
+            })
+            time.sleep(5)
             
-            if ui_found:
-                allure.dynamic.parameter("UI Verification", "Success")
-                save_allure_screenshot(driver, f"{package_name}_ui_verified")
-                assert True, f"{app_name} UI loaded successfully"
+            # Check for expected UI element
+            by_type, element_value = ui_check
+            
+            if by_type and element_value:
+                ui_found = check_element(driver, by_type, element_value, timeout=10)
+                
+                if ui_found:
+                    ui_success = True
+                    allure.dynamic.parameter("UI Verification", "Success")
+                    save_allure_screenshot(driver, f"{package_name}_ui_verified")
+                else:
+                    error_message = f"Expected UI element not found: {element_value}"
+                    allure.dynamic.parameter("UI Verification", "Failed")
+                    save_allure_screenshot(driver, f"{package_name}_ui_failed", failed=True)
             else:
-                allure.dynamic.parameter("UI Verification", "Failed")
-                save_allure_screenshot(driver, f"{package_name}_ui_failed", failed=True)
-                pytest.fail(f"{app_name} UI element not found: {element_value}")
-        else:
-            # Take screenshot for manual verification
-            save_allure_screenshot(driver, f"{package_name}_ui_manual_check")
-            allure.dynamic.parameter("UI Verification", "Manual check required")
-            # Don't fail the test for apps without defined UI checks yet
+                # Take screenshot for manual verification
+                save_allure_screenshot(driver, f"{package_name}_ui_manual_check")
+                allure.dynamic.parameter("UI Verification", "Manual check required")
+                ui_success = True  # Don't fail for apps without defined checks
+                
+        except Exception as e:
+            error_message = f"UI verification error: {str(e)}"
+            save_allure_screenshot(driver, f"{package_name}_ui_error", failed=True)
+            allure.dynamic.parameter("UI Verification", "Error")
+        
+        # Update the installation result with UI verification status
+        update_installation_result_with_ui_status(package_name, ui_success, error_message)
+        
+        if not ui_success and error_message:
+            pytest.fail(f"{app_name} UI verification failed: {error_message}")
 
 if __name__ == "__main__":
     # Save results at the end
