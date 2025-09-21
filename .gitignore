@@ -1,0 +1,15 @@
+﻿__pycache__/
+*.pyc
+screenshots/
+screenshots_failed/
+logs/
+*.log
+venv/
+tmp/
+.env/
+*.tmp
+*.bak
+.vscode/settings.json
+.vscode/launch.json
+allure-report/
+allure-results/

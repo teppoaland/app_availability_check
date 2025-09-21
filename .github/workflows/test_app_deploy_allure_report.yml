@@ -1,0 +1,318 @@
+# Running order - is critical
+# 1. Load history from git
+# 2. Run tests FIRST 
+# 3. Generate Allure report AFTER tests
+# 4. Update history (optional)
+
+name: Test app and generate Allure report
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  GIT_STORAGE_REPO: "https://github.com/teppoaland/git_storage.git"
+  PROJECT_NAME: "sbsaa-tests"
+  PYTHONUTF8: "1"
+
+jobs:
+  test-and-generate-report:
+    name: Run tests and generate Allure report
+    runs-on: self-hosted
+    continue-on-error: true
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[test]'))
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 1. Setup Git Storage Repository
+      - name: Clone Git Storage Repository
+        run: |
+          if (Test-Path "storage") {
+            Remove-Item -Path "storage" -Recurse -Force
+          }
+          git clone $env:GIT_STORAGE_REPO storage
+          Write-Host "Git storage repository cloned successfully"
+        shell: powershell
+
+      # 2. CRITICAL: Create directory structure for Allure history
+      - name: Create Allure History Directory
+        run: |
+          New-Item -ItemType Directory -Path "./allure-results/history" -Force
+          Write-Host "Created ./allure-results/history directory"
+        shell: powershell
+
+      # 3. CRITICAL: Load history from Git Storage
+      - name: Load Previous Allure History from Git Storage
+        run: |
+          $historyPath = "storage/allure-history/$env:PROJECT_NAME"
+          if (Test-Path $historyPath) {
+            Copy-Item -Path "$historyPath/*" -Destination "./allure-results/history/" -Force -Recurse -ErrorAction SilentlyContinue
+            Write-Host "SUCCESS: History files loaded from git storage"
+            Get-ChildItem -Path "./allure-results/history" -File | Format-Table Name, Length
+          } else {
+            Write-Host "INFO: No previous history found in git storage. This is expected on first run."
+            Write-Host "Looking for: $historyPath"
+          }
+        shell: powershell
+
+      # 4. DEBUG: Verify what was loaded
+      - name: Verify History Load
+        run: |
+          Write-Host "Contents of ./allure-results/history after git storage load:"
+          if (Test-Path "./allure-results/history") {
+            Get-ChildItem -Path "./allure-results/history" -File | Format-Table Name, Length
+            $fileCount = (Get-ChildItem -Path "./allure-results/history" -File).Count
+            Write-Host "Total history files found: $fileCount"
+          } else {
+            Write-Host "No history directory found"
+          }
+        shell: powershell
+
+      - name: Use system Python
+        run: python --version
+        shell: powershell
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install allure-pytest
+        shell: powershell
+
+      # 5. DEBUG: Check what history exists before running tests
+      - name: Debug - Check what history exists before tests
+        run: |
+          Write-Host "=== PRE-TEST DEBUG ==="
+          if (Test-Path "./allure-results/history") {
+            Write-Host "History directory exists, contents:"
+            Get-ChildItem -Path "./allure-results/history" | Format-Table Name, Length
+            
+            if (Test-Path "./allure-results/history/history-trend.json") {
+              Write-Host "--- Raw history-trend.json content BEFORE tests ---"
+              Get-Content "./allure-results/history/history-trend.json" | Write-Host
+            }
+          } else {
+            Write-Host "No history directory found before tests"
+          }
+        shell: powershell
+
+      # 6. RUN TESTS FIRST - generates new results in allure-results
+      - name: Run Appium tests with Allure reporting
+        shell: powershell
+        run: |
+          pytest --alluredir=allure-results -v -s Test_features_automation_allure.py
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "WARNING: Tests completed with failures, but continuing with report generation"
+          }
+        continue-on-error: true
+      
+      # 6.1 After the test execution step - Saving App Version to Git Storage
+      - name: Save App Version to Git Storage
+        if: always()
+        run: |
+          if (Test-Path "tested_app_version.json") {
+            $versionData = Get-Content "tested_app_version.json" | ConvertFrom-Json
+            Write-Host "Found tested app version: $($versionData.tested_version)"
+            
+            cd storage
+            $versionFile = "allure-history/$env:PROJECT_NAME/app_version.json"
+            Copy-Item "../tested_app_version.json" $versionFile -Force
+            
+            git add $versionFile
+            git commit -m "Update app version info - $($versionData.tested_version)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "No version changes to commit"
+            }
+          } else {
+            Write-Host "No app version file found"
+          }
+        shell: powershell
+        continue-on-error: true
+
+      # 7. DEBUG: Verify test results were generated
+      - name: Verify Test Results
+        run: |
+          Write-Host "Contents of ./allure-results after tests:"
+          if (Test-Path "./allure-results") {
+            Get-ChildItem -Path "./allure-results" -Exclude "history" | Format-Table Name, Length
+            $resultCount = (Get-ChildItem -Path "./allure-results" -Exclude "history").Count
+            Write-Host "Total test result files: $resultCount"
+            
+            # Check if we have actual test result files
+            $jsonFiles = Get-ChildItem -Path "./allure-results" -Filter "*.json" -Exclude "history*"
+            Write-Host "JSON result files: $($jsonFiles.Count)"
+          }
+        shell: powershell
+
+      # 8. Update history BEFORE report generation
+      - name: Update Allure history with Python
+        if: always()
+        run: |
+          python update_allure_history.py -v
+        shell: powershell
+
+      # 9. Generate report
+      - name: Generate Allure report with Python
+        if: always()
+        run: |
+          python allure_operations.py --install --generate --verbose
+        shell: powershell
+
+      # 10. NEW: Clean up Allure's malformed entries
+      - name: Clean Allure-generated history format
+        if: always()
+        run: |
+          python update_allure_history.py --post-cleanup -v
+        shell: powershell
+
+      # 11. DEBUG: Verify report generation and history preservation
+      - name: Verify Report Generation and History
+        if: always()
+        run: |
+          Write-Host "=== Report Generation Verification ==="
+          if (Test-Path "./allure-report") {
+            Write-Host "SUCCESS: Allure report directory exists"
+            $reportFiles = Get-ChildItem -Path "./allure-report" -File -Recurse
+            Write-Host "Total report files: $($reportFiles.Count)"
+            
+            if (Test-Path "./allure-report/history") {
+              Write-Host "SUCCESS: History directory exists in report"
+              Get-ChildItem -Path "./allure-report/history" | Format-Table Name, Length
+              
+              # Show content of generated history files
+              if (Test-Path "./allure-report/history/history-trend.json") {
+                Write-Host "--- Final history-trend.json content ---"
+                Get-Content "./allure-report/history/history-trend.json" | Write-Host
+              }
+            } else {
+              Write-Host "WARNING: No history directory found in generated report"
+            }
+          } else {
+            Write-Host "ERROR: No allure-report directory found"
+          }
+        shell: powershell
+
+      # 12. CRITICAL: Save history back to Git Storage
+      - name: Save History to Git Storage
+        if: always()
+        run: |
+          Write-Host "=== Saving History to Git Storage ==="
+          
+          # Configure Git
+          cd storage
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Create project directory in storage
+          $storageHistoryPath = "allure-history/$env:PROJECT_NAME"
+          New-Item -ItemType Directory -Path $storageHistoryPath -Force
+          
+          # Copy history from report to storage
+          if (Test-Path "../allure-report/history") {
+            Copy-Item -Path "../allure-report/history/*" -Destination $storageHistoryPath -Force -Recurse -ErrorAction SilentlyContinue
+            Write-Host "SUCCESS: History copied to git storage"
+            
+            # Show what we're about to commit
+            Write-Host "Files to be committed:"
+            Get-ChildItem -Path $storageHistoryPath | Format-Table Name, Length
+            
+            # Add and commit changes
+            git add $storageHistoryPath
+            $commitMessage = "Update $env:PROJECT_NAME history - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Run #$env:GITHUB_RUN_NUMBER"
+            
+            # Check if there are changes to commit
+            $status = git status --porcelain
+            if ($status) {
+              git commit -m $commitMessage
+              git push origin main
+              Write-Host "SUCCESS: History committed and pushed to git storage"
+              Write-Host "Commit message: $commitMessage"
+            } else {
+              Write-Host "INFO: No changes to commit - history unchanged"
+            }
+          } else {
+            Write-Host "WARNING: No history directory found to save"
+          }
+          
+          cd ..
+        shell: powershell
+        continue-on-error: true
+
+      # 13. DEBUG: Final verification of git storage
+      - name: Verify Git Storage Update
+        if: always()
+        run: |
+          Write-Host "=== Final Git Storage Verification ==="
+          cd storage
+          git log --oneline -5
+          Write-Host "Files in storage for $env:PROJECT_NAME :"
+          if (Test-Path "allure-history/$env:PROJECT_NAME") {
+            Get-ChildItem -Path "allure-history/$env:PROJECT_NAME" | Format-Table Name, Length, LastWriteTime
+            
+            # Show final content
+            if (Test-Path "allure-history/$env:PROJECT_NAME/history-trend.json") {
+              Write-Host "--- Final git storage history-trend.json ---"
+              Get-Content "allure-history/$env:PROJECT_NAME/history-trend.json" | Write-Host
+            }
+          } else {
+            Write-Host "No files found in storage for $env:PROJECT_NAME"
+          }
+          cd ..
+        shell: powershell
+
+      # 14. Upload full report artifact for deployment (backup method)
+      - name: Upload Allure report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report
+          if-no-files-found: warn
+          retention-days: 7
+
+      # 15. Cleanup
+      - name: Cleanup temporary files
+        if: always()
+        run: |
+          if (Test-Path "storage") {
+            Remove-Item -Path "storage" -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "SUCCESS: Cleanup completed"
+        shell: powershell
+
+  deploy-to-github-pages:
+    name: Deploy Allure report to GitHub Pages
+    runs-on: ubuntu-latest
+    needs: test-and-generate-report
+    if: always() && needs.test-and-generate-report.result == 'success'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Allure report artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: allure-report
+          path: ./allure-report
+        continue-on-error: true
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ./allure-report
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
