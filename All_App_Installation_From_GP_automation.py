@@ -20,7 +20,9 @@ print("\nAll_App_Installation_From_GP_automation.py - App availability testing s
 TEST_APPS = [
     ("fi.sbweather.app", "Sebitti Sää", ("ACCESSIBILITY_ID", "KOTI\nTab 1 of 3")),
     ("fi.reportronic.app", "Reportronic", ("XPATH", "//android.widget.Button[@text='Login with QR code']")),
-    # Add more apps here as needed
+    ("com.feelment", "Feelment", ("ACCESSIBILITY_ID", "Kirjaudu sisään")),
+    ("com.coubonga.app", "Coubonga", ("ACCESSIBILITY_ID", "PUHELINNUMERO")),
+    ("com.iloq.smartlock.s50", "iLOQ", ("XPATH", "//android.widget.TextView[@resource-id='android:id/message']")),
 ]
 
 PLAY_STORE_PACKAGE = "com.android.vending"
