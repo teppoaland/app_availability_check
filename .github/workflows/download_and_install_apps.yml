@@ -200,6 +200,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: test-and-generate-report
     if: always() && needs.test-and-generate-report.result == 'success'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
