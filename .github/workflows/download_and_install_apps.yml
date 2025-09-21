@@ -94,7 +94,12 @@ jobs:
             Write-Host "Found installation results for $($installData.Count) apps"
             
             cd storage
-            $resultsFile = "allure-history/$env:PROJECT_NAME/installation_results.json"
+            $resultsDir = "allure-history/$env:PROJECT_NAME"
+            $resultsFile = "$resultsDir/installation_results.json"
+            
+            # Create directory if it doesn't exist
+            New-Item -ItemType Directory -Path $resultsDir -Force
+            
             Copy-Item "../installation_results.json" $resultsFile -Force
             
             git add $resultsFile
