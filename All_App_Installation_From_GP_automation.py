@@ -19,7 +19,7 @@ print("\nAll_App_Installation_From_GP_automation.py - App availability testing s
 # Apps to test - (package_name, app_name_for_search, ui_check_element)
 TEST_APPS = [
     ("fi.sbweather.app", "Sebitti Sää", ("ACCESSIBILITY_ID", "KOTI\nTab 1 of 3")),
-    ("fi.reportronic.app", "Reportronic", ("CLASS_NAME", "android.widget.TextView")),  # Placeholder - needs verification
+    ("fi.reportronic.app", "Reportronic", ("XPATH", "//android.widget.Button[@text='Login with QR code']")),
     # Add more apps here as needed
 ]
 
