@@ -285,7 +285,7 @@ def test_verify_app_ui(app_driver, package_name, app_name, ui_check):
                 'includeStderr': True,
                 'timeout': 10000
             })
-            time.sleep(5)
+            time.sleep(10)
             
             # Check for expected UI element
             by_type, element_value = ui_check
